@@ -1,4 +1,4 @@
-import json, os
+import json, os, time
 import requests
 import streamlit as st
 
@@ -152,11 +152,13 @@ def call_groq(system, user):
                               headers={"Authorization": f"Bearer {k}"},
                               json={"model": m, "temperature": 0.3,
                                     "messages": [{"role": "system", "content": system},
-                                                 {"role": "user", "content": user}]}, timeout=60)
+                                                 {"role": "user", "content": user}]}, timeout=20)
             r.raise_for_status()
             return r.json()["choices"][0]["message"]["content"]
         except Exception as e:
             err = f"{m}: {e}"
+            if getattr(getattr(e, "response", None), "status_code", None) != 404:
+                break  # مش مشكلة اسم موديل: مفيش فايدة نكرر
     raise RuntimeError(err)
 
 def call_gemini(system, user):
@@ -169,12 +171,14 @@ def call_gemini(system, user):
             r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
                               headers={"x-goog-api-key": k},
                               json={"systemInstruction": {"parts": [{"text": system}]},
-                                    "contents": [{"parts": [{"text": user}]}]}, timeout=60)
+                                    "contents": [{"parts": [{"text": user}]}]}, timeout=20)
             r.raise_for_status()
             parts = r.json()["candidates"][0]["content"]["parts"]
             return "".join(p.get("text", "") for p in parts if not p.get("thought"))
         except Exception as e:
             err = f"{m}: {e}"
+            if getattr(getattr(e, "response", None), "status_code", None) != 404:
+                break  # مش مشكلة اسم موديل: مفيش فايدة نكرر
     raise RuntimeError(err)
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -222,11 +226,26 @@ def tr_dish(did):
     assert all(k in r for k in keep) and isinstance(r["traditional"]["steps"], list) and isinstance(r["healthy"]["steps"], list)
     return r
 
+@st.cache_resource
+def _fails():
+    return {}
+
+def guarded(key, fn, *args):
+    """لو الترجمة فشلت من أقل من 5 دقايق منحاولش تاني (عشان الصفحة ما تعلقش)"""
+    f = _fails()
+    if time.time() - f.get(key, 0) < 300:
+        raise RuntimeError("recent failure")
+    try:
+        return fn(*args)
+    except Exception:
+        f[key] = time.time()
+        raise
+
 def _names():
     if L != "en":
         return {}
     try:
-        return tr_names()
+        return guarded("names", tr_names)
     except Exception:
         return {}
 EN = _names()
@@ -239,7 +258,8 @@ def full(d):
     v["category"], v["healthy_method"] = cat_l(d["category"]), meth_l(d["healthy_method"])
     if L == "en":
         try:
-            v.update(tr_dish(d["id"]))
+            with st.spinner("Translating..."):
+                v.update(guarded(f"d{d['id']}", tr_dish, d["id"]))
         except Exception:
             st.caption("⚠️ English translation is unavailable right now, showing Arabic.")
     return v
