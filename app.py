@@ -112,29 +112,45 @@ SOURCES = [
 LBL = {1: "قليل جدًا", 2: "قليل", 3: "متوسط", 4: "عالي", 5: "عالي جدًا"}
 
 # ---------- الذكاء الاصطناعي: Groq ثم Gemini ----------
+def _models(secret_key, defaults):
+    custom = st.secrets.get(secret_key)
+    return ([custom] if custom else []) + [m for m in defaults if m != custom]
+
 def call_groq(system, user):
     k = st.secrets.get("GROQ_API_KEY")
     if not k:
         raise RuntimeError("no groq key")
-    r = requests.post("https://api.groq.com/openai/v1/chat/completions",
-                      headers={"Authorization": f"Bearer {k}"},
-                      json={"model": st.secrets.get("GROQ_MODEL", "llama-3.1-8b-instant"),
-                            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                            "temperature": 0.3}, timeout=30)
-    r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"]
+    err = None
+    for m in _models("GROQ_MODEL", ["openai/gpt-oss-20b", "openai/gpt-oss-120b"]):
+        try:
+            r = requests.post("https://api.groq.com/openai/v1/chat/completions",
+                              headers={"Authorization": f"Bearer {k}"},
+                              json={"model": m, "temperature": 0.3,
+                                    "messages": [{"role": "system", "content": system},
+                                                 {"role": "user", "content": user}]}, timeout=40)
+            r.raise_for_status()
+            return r.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            err = f"{m}: {e}"
+    raise RuntimeError(err)
 
 def call_gemini(system, user):
     k = st.secrets.get("GEMINI_API_KEY")
     if not k:
         raise RuntimeError("no gemini key")
-    m = st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash")
-    r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
-                      headers={"x-goog-api-key": k},
-                      json={"systemInstruction": {"parts": [{"text": system}]},
-                            "contents": [{"parts": [{"text": user}]}]}, timeout=30)
-    r.raise_for_status()
-    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+    err = None
+    for m in _models("GEMINI_MODEL", ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"]):
+        try:
+            r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
+                              headers={"x-goog-api-key": k},
+                              json={"systemInstruction": {"parts": [{"text": system}]},
+                                    "contents": [{"parts": [{"text": user}]}]}, timeout=40)
+            r.raise_for_status()
+            parts = r.json()["candidates"][0]["content"]["parts"]
+            return "".join(p.get("text", "") for p in parts if not p.get("thought"))
+        except Exception as e:
+            err = f"{m}: {e}"
+    raise RuntimeError(err)
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def _ask(system, user):
