@@ -24,7 +24,7 @@ h2,h3{font-size:clamp(1.1rem,4vw,1.5rem)!important}
 .chip{display:inline-block;padding:.1rem .7rem;margin-left:.4rem;border-radius:999px;background:rgba(46,125,79,.18);font-size:.85rem}
 div[role="radiogroup"]{flex-wrap:wrap;gap:.4rem;justify-content:center}
 div[role="radiogroup"] label{background:rgba(46,125,79,.1);border:1px solid rgba(46,125,79,.35);border-radius:999px;padding:.25rem .9rem;margin:0}
-div[role="radiogroup"] label>div:first-child{display:none}
+div[role="radiogroup"] label>div:first-child,label[data-baseweb="radio"]>div:first-child{display:none!important}
 div[role="radiogroup"] label:has(input:checked){background:#2e7d4f;border-color:#2e7d4f}
 div[role="radiogroup"] label:has(input:checked) *{color:#fff!important}
 .stTabs [data-baseweb="tab-list"]{overflow-x:auto;gap:.3rem}
@@ -130,7 +130,7 @@ def call_gemini(system, user):
         raise RuntimeError("no gemini key")
     m = st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash")
     r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
-                      params={"key": k},
+                      headers={"x-goog-api-key": k},
                       json={"systemInstruction": {"parts": [{"text": system}]},
                             "contents": [{"parts": [{"text": user}]}]}, timeout=30)
     r.raise_for_status()
@@ -138,23 +138,24 @@ def call_gemini(system, user):
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def _ask(system, user):
+    errs = []
     for fn in (call_groq, call_gemini):  # لو Groq خلص أو فشل يروح على Gemini
         try:
             return fn(system, user)
-        except Exception:
-            continue
-    raise RuntimeError("all providers failed")
+        except Exception as e:
+            errs.append(f"{fn.__name__}: {e}")
+    raise RuntimeError(" | ".join(errs))
 
 def ask(system, user, limit=20):
     n = st.session_state.setdefault("calls", 0)
     if n >= limit:
-        return "وصلتي للحد اليومي للأسئلة في الجلسة دي. جربي تاني بعدين 🌿"
+        return "⚠️ وصلتي للحد اليومي للأسئلة في الجلسة دي. جربي تاني بعدين."
     try:
         out = _ask(system, user)
         st.session_state.calls = n + 1
         return out
-    except Exception:
-        return "الخدمة مشغولة دلوقتي، جربي بعد شوية."
+    except Exception as e:
+        return f"⚠️ الخدمة مشغولة دلوقتي، جربي بعد شوية.\n\n`تفاصيل للمطورة: {e}`"
 
 CHAT_SYS = ("أنتِ مساعد توعوي لتغذية صحية للأكل المصري، تتكلمين بالعامية المصرية المبسطة. "
             "للأكلة المطلوبة اكتبي: ١) وصفة تقليدية مختصرة ٢) النسخة الصحية بمقاديرها وخطواتها ٣) ليه هي أصح، مع ربطها بمبادئ علمية عامة "
@@ -314,7 +315,8 @@ def page_chat():
     else:
         with st.spinner("بفكر..."):
             ans = ask(CHAT_SYS, q)
-    ans += "\n\n---\n*" + DISCLAIMER + "*\n\n**المراجع:** " + " | ".join(f"[{t.split(' – ')[0]}]({u})" for t, u in SOURCES)
+    if not ans.startswith("⚠️"):
+        ans += "\n\n---\n*" + DISCLAIMER + "*\n\n**المراجع:** " + " | ".join(f"[{t.split(' – ')[0]}]({u})" for t, u in SOURCES)
     msgs.append({"role": "assistant", "content": ans})
     st.chat_message("assistant").write(ans)
 
