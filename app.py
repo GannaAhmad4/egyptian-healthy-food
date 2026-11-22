@@ -189,7 +189,7 @@ def call_gemini(system, user):
     raise RuntimeError(err)
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def _ask(system, user):
+def _ask(system, user, fresh=0):  # fresh=1 يتجاوز أي رد قديم متخزن
     errs = []
     for fn in (call_groq, call_gemini):  # لو Groq خلص أو فشل يروح على Gemini
         try:
@@ -198,13 +198,13 @@ def _ask(system, user):
             errs.append(f"{fn.__name__}: {e}")
     raise RuntimeError(" | ".join(errs))
 
-def ask(system, user, limit=20):
+def ask(system, user, limit=20, fresh=0):
     n = st.session_state.setdefault("calls", 0)
     if n >= limit:
         return t("⚠️ وصلتي للحد اليومي للأسئلة في الجلسة دي. جربي تاني بعدين.",
                  "⚠️ You reached the question limit for this session. Please try again later.")
     try:
-        out = _ask(system, user)
+        out = _ask(system, user, fresh)
         st.session_state.calls = n + 1
         return out
     except Exception as e:
@@ -271,12 +271,12 @@ def full(d):
             st.caption("⚠️ English translation is unavailable right now, showing Arabic.")
     return v
 
-CHAT_SYS = ("أنتِ مساعد توعوي لتغذية صحية للأكل المصري، تتكلمين بالعامية المصرية المبسطة. "
+CHAT_SYS = ("أنتِ مساعد توعوي لتغذية صحية، تخصصك الأكل المصري لكنك بتجاوبي عن أي أكلة من أي مطبخ في العالم (بيتزا، سوشي، باستا، برجر...)، وتتكلمين بالعامية المصرية المبسطة. أي سؤال عن أكلة أو وصفة أو مشروب هو سؤال مسموح ولازم تجاوبي عليه بنسخة صحية منه. "
             "للأكلة المطلوبة اكتبي: ١) وصفة تقليدية مختصرة ٢) النسخة الصحية بمقاديرها وخطواتها ٣) ليه هي أصح، مع ربطها بمبادئ علمية عامة "
             "(تقليل الدهون المشبعة والملح والسكريات الحرة، وزيادة الألياف والخضار) كما في إرشادات منظمة الصحة العالمية. "
             "في آخر إجابتك اكتبي سطراً منفصلاً بالشكل بالظبط: LEVELS: {'fat':[x,y],'salt':[x,y],'sugar':[x,y],'fiber':[x,y]} "
             "حيث x للوصفة التقليدية وy للصحية، وكل رقم من 1 (قليل) إلى 5 (كتير). "
-            "ممنوع ذكر أرقام سعرات أو ادعاءات علاجية أو اختراع أبحاث وأرقام وروابط. لو السؤال خارج الأكل والتغذية اعتذري بلطف.")
+            "ممنوع ذكر أرقام سعرات أو ادعاءات علاجية أو اختراع أبحاث وأرقام وروابط. اعتذري فقط لو السؤال بعيد تمامًا عن الأكل والتغذية (زي السياسة أو البرمجة)، أما أي أكلة فجاوبي عليها دايمًا.")
 if os.path.exists("knowledge.md"):  # ضعي هنا نقاط منقولة من المصادر المعتمدة ليجاوب منها الـ AI
     with open("knowledge.md", encoding="utf-8") as _f:
         CHAT_SYS += "\n\nاعتمدي أولاً على المعلومات التالية المنقولة من المصادر المعتمدة، ولا تخالفيها:\n" + _f.read()[:6000]
@@ -480,6 +480,8 @@ def page_chat():
     else:
         with st.spinner(t("بفكر...", "Thinking...")):
             ans, lv = split_levels(ask(chat_sys(), q))
+            if not ans.strip():  # رد بلا نص (غالبًا متخزن قديم): جربي مرة تانية بدون الكاش
+                ans, lv = split_levels(ask(chat_sys(), q, fresh=1))
             if not ans.strip():
                 ans = t("⚠️ مجاش رد، جربي تكتبي السؤال بشكل تاني.", "⚠️ No answer came back, please rephrase your question.")
     foot = None
