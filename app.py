@@ -50,6 +50,15 @@ def load():
 DATA = load()
 DISHES = DATA["dishes"]
 BY_ID = {d["id"]: d for d in DISHES}
+
+@st.cache_data
+def load_en():  # الترجمة الإنجليزية الثابتة (بدون AI)
+    if not os.path.exists("egyptian_dishes_en.json"):
+        return {}
+    with open("egyptian_dishes_en.json", encoding="utf-8") as f:
+        return {d["id"]: d for d in json.load(f)["dishes"]}
+
+EN_DATA = load_en()
 DISCLAIMER = t(DATA["meta"]["disclaimer"],
                "This information is for education only and is not a substitute for advice from a dietitian or doctor, "
                "especially for people with chronic conditions.")
@@ -251,6 +260,8 @@ def guarded(key, fn, *args):
 def _names():
     if L != "en":
         return {}
+    if EN_DATA:
+        return {i: d["name"] for i, d in EN_DATA.items()}
     try:
         return guarded("names", tr_names)
     except Exception:
@@ -263,7 +274,9 @@ def full(d):
     v = dict(d)
     v["name"] = dname(d["id"])
     v["category"], v["healthy_method"] = cat_l(d["category"]), meth_l(d["healthy_method"])
-    if L == "en":
+    if L == "en" and d["id"] in EN_DATA:
+        v.update({k: EN_DATA[d["id"]][k] for k in ("traditional", "healthy", "what_changed", "tips")})
+    elif L == "en":
         try:
             with st.spinner("Translating..."):
                 v.update(guarded(f"d{d['id']}", tr_dish, d["id"]))
@@ -279,7 +292,7 @@ CHAT_SYS = ("أنتِ مساعد توعوي لتغذية صحية، تخصصك �
             "ممنوع ذكر أرقام سعرات أو ادعاءات علاجية أو اختراع أبحاث وأرقام وروابط. اعتذري فقط لو السؤال بعيد تمامًا عن الأكل والتغذية (زي السياسة أو البرمجة)، أما أي أكلة فجاوبي عليها دايمًا.")
 if os.path.exists("knowledge.md"):  # ضعي هنا نقاط منقولة من المصادر المعتمدة ليجاوب منها الـ AI
     with open("knowledge.md", encoding="utf-8") as _f:
-        CHAT_SYS += "\n\nاعتمدي أولاً على المعلومات التالية المنقولة من المصادر المعتمدة، ولا تخالفيها:\n" + _f.read()[:6000]
+        CHAT_SYS += "\n\nاعتمدي أولاً على المعلومات التالية المنقولة من المصادر المعتمدة، ولا تخالفيها:\n" + _f.read()[:3000]
 PLATE_SYS = ('حللي الأكلة المذكورة وارجعي JSON فقط بدون أي كلام آخر بالشكل {"v":عدد,"g":عدد,"p":عدد,"d":عدد} '
              "يمثل النسب التقريبية (مجموعها 100) لمكوناتها: خضار وفاكهة v، نشويات g، بروتين p، ألبان d.")
 def chat_sys():
@@ -522,6 +535,15 @@ if st.query_params.get("debug"):
                     st.success(f"{fn.__name__}: {fn('Reply with the single word OK.', 'ping')[:80]}")
                 except Exception as e:
                     st.error(f"{fn.__name__}: {e}")
+        if st.button("Show Groq limits"):  # الحدود المتبقية من هيدرز Groq
+            try:
+                r = requests.post("https://api.groq.com/openai/v1/chat/completions",
+                                  headers={"Authorization": f"Bearer {st.secrets.get('GROQ_API_KEY')}"},
+                                  json={"model": _models("GROQ_MODEL", ["openai/gpt-oss-20b"])[0], "max_tokens": 16,
+                                        "messages": [{"role": "user", "content": "hi"}]}, timeout=30)
+                st.json({k: v for k, v in r.headers.items() if k.lower().startswith("x-ratelimit")} or {"status": r.status_code})
+            except Exception as e:
+                st.error(str(e))
         if st.button("Clear cache"):
             st.cache_data.clear()
             st.success("cache cleared")
