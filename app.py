@@ -4,7 +4,7 @@ import streamlit as st
 
 st.set_page_config(page_title="Healthy Egyptian Food", page_icon="🥗", layout="centered",
                    initial_sidebar_state="collapsed")
-L = st.session_state.get("lang", "ar")  # اللغة الحالية: ar أو en
+L = st.session_state.get("lang") or "ar"  # اللغة الحالية: ar أو en
 def t(ar, en):
     return en if L == "en" else ar
 
@@ -151,14 +151,18 @@ def call_groq(system, user):
             r = requests.post("https://api.groq.com/openai/v1/chat/completions",
                               headers={"Authorization": f"Bearer {k}"},
                               json={"model": m, "temperature": 0.3,
+                                    **({"reasoning_effort": "low"} if "gpt-oss" in m else {}),
                                     "messages": [{"role": "system", "content": system},
-                                                 {"role": "user", "content": user}]}, timeout=20)
+                                                 {"role": "user", "content": user}]}, timeout=45)
             r.raise_for_status()
-            return r.json()["choices"][0]["message"]["content"]
+            out = (r.json()["choices"][0]["message"].get("content") or "").strip()
+            if not out:
+                raise ValueError("empty reply")
+            return out
         except Exception as e:
             err = f"{m}: {e}"
-            if getattr(getattr(e, "response", None), "status_code", None) != 404:
-                break  # مش مشكلة اسم موديل: مفيش فايدة نكرر
+            if getattr(getattr(e, "response", None), "status_code", None) not in (404, 429, 503) and not isinstance(e, ValueError):
+                break  # 404 اسم غلط، 429 حد الاستخدام (لكل موديل حد مستقل)، 503 مشغول: جربي اللي بعده
     raise RuntimeError(err)
 
 def call_gemini(system, user):
@@ -171,14 +175,17 @@ def call_gemini(system, user):
             r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
                               headers={"x-goog-api-key": k},
                               json={"systemInstruction": {"parts": [{"text": system}]},
-                                    "contents": [{"parts": [{"text": user}]}]}, timeout=20)
+                                    "contents": [{"parts": [{"text": user}]}]}, timeout=45)
             r.raise_for_status()
             parts = r.json()["candidates"][0]["content"]["parts"]
-            return "".join(p.get("text", "") for p in parts if not p.get("thought"))
+            out = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+            if not out:
+                raise ValueError("empty reply")
+            return out
         except Exception as e:
             err = f"{m}: {e}"
-            if getattr(getattr(e, "response", None), "status_code", None) != 404:
-                break  # مش مشكلة اسم موديل: مفيش فايدة نكرر
+            if getattr(getattr(e, "response", None), "status_code", None) not in (404, 429, 503) and not isinstance(e, ValueError):
+                break  # 404 اسم غلط، 429 حد الاستخدام (لكل موديل حد مستقل)، 503 مشغول: جربي اللي بعده
     raise RuntimeError(err)
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -318,7 +325,10 @@ def split_levels(text):
         lv = [tuple(max(1, min(5, int(x))) for x in d[k][:2]) for k in ("fat", "salt", "sugar", "fiber")]
     except Exception:
         lv = None
-    return text[:i].rstrip(" \n`"), lv
+    before = text[:i].rstrip(" \n`")
+    if not before:  # الموديل كتب LEVELS الأول: خدي اللي بعد السطر
+        before = tail[tail.rfind("}") + 1:].strip(" \n`")
+    return before, lv
 
 def show_dish(d0):
     d = full(d0)
@@ -470,6 +480,8 @@ def page_chat():
     else:
         with st.spinner(t("بفكر...", "Thinking...")):
             ans, lv = split_levels(ask(chat_sys(), q))
+            if not ans.strip():
+                ans = t("⚠️ مجاش رد، جربي تكتبي السؤال بشكل تاني.", "⚠️ No answer came back, please rephrase your question.")
     foot = None
     if not ans.startswith("⚠️"):
         foot = ("---\n*" + DISCLAIMER + "*\n\n**" + t("المراجع", "References") + ":** "
@@ -482,13 +494,32 @@ def page_chat():
 PAGES = {"lib": (page_library, "📚 مكتبة الأكل", "📚 Library"), "why": (page_why, "🔬 ليه أصح؟", "🔬 Why healthier?"),
          "plate": (page_plate, "🍽️ الطبق الصحي", "🍽️ Healthy plate"), "chat": (page_chat, "🤖 المساعد الذكي", "🤖 Assistant")}
 
-st.radio("language", ["ar", "en"], format_func=lambda x: "العربية" if x == "ar" else "English", key="lang",
-         horizontal=True, label_visibility="collapsed")
+st.pills("language", ["ar", "en"], format_func=lambda x: "العربية" if x == "ar" else "English", key="lang",
+         default="ar", label_visibility="collapsed")
 st.markdown(f"<div class='hero'><h1>{t('🥗 الأكل المصري بنسخة صحية', '🥗 Healthy Egyptian Food')}</h1>"
             f"<p>{t('30 أكلة مصرية بالطريقة التقليدية والصحية', '30 Egyptian dishes: traditional and healthy versions')}</p></div>",
             unsafe_allow_html=True)
-page = st.radio("menu", list(PAGES), format_func=lambda k: PAGES[k][2 if L == "en" else 1],
-                horizontal=True, label_visibility="collapsed")
+page = st.pills("menu", list(PAGES), format_func=lambda k: PAGES[k][2 if L == "en" else 1],
+                default="lib", key="page", label_visibility="collapsed") or "lib"
 PAGES[page][0]()
 st.divider()
 sources_box()
+
+# 🛠️ لوحة تشخيص: تظهر فقط لو أضفتي ?debug=1 لرابط التطبيق (شيليها قبل التسليم لو حبيتي)
+if st.query_params.get("debug"):
+    def _has(k):
+        try:
+            return bool(st.secrets.get(k))
+        except Exception:
+            return False
+    with st.expander("🛠️ Diagnostics", expanded=True):
+        st.write({"GROQ_API_KEY set": _has("GROQ_API_KEY"), "GEMINI_API_KEY set": _has("GEMINI_API_KEY")})
+        if st.button("Test AI connection"):
+            for fn in (call_groq, call_gemini):
+                try:
+                    st.success(f"{fn.__name__}: {fn('Reply with the single word OK.', 'ping')[:80]}")
+                except Exception as e:
+                    st.error(f"{fn.__name__}: {e}")
+        if st.button("Clear cache"):
+            st.cache_data.clear()
+            st.success("cache cleared")
